@@ -1,0 +1,19 @@
+# Build-generated directories
+Debug/
+Release/
+build/
+
+# STM32CubeIDE project settings
+.metadata
+.project
+.settings/
+.mxproject
+*.launch
+
+# Other generated files
+*.suo
+*.user
+*.bak
+*.tmp
+*.log
+*.map
