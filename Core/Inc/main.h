@@ -62,8 +62,8 @@ void Error_Handler(void);
 #define B1_EXTI_IRQn EXTI15_10_IRQn
 #define MOTOR_R_F_Pin GPIO_PIN_0
 #define MOTOR_R_F_GPIO_Port GPIOA
-#define MOROR_R_B_Pin GPIO_PIN_1
-#define MOROR_R_B_GPIO_Port GPIOA
+#define MOTOR_R_B_Pin GPIO_PIN_1
+#define MOTOR_R_B_GPIO_Port GPIOA
 #define USART_TX_Pin GPIO_PIN_2
 #define USART_TX_GPIO_Port GPIOA
 #define USART_RX_Pin GPIO_PIN_3

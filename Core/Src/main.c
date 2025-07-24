@@ -54,9 +54,23 @@
 
 /* Private variables ---------------------------------------------------------*/
 UART_HandleTypeDef huart2;
+UART_HandleTypeDef huart3;
 
-osThreadId defaultTaskHandle;
 /* USER CODE BEGIN PV */
+osThreadId CommandReceiverHandle;
+osThreadId MotorHandle;
+osThreadId motorControlTaskHandle;
+osMessageQId commandQueueHandle;
+
+typedef enum {
+  STATE_STOP,
+  STATE_FORWARD,
+  STATE_BACKWARD,
+  STATE_LEFT,
+  STATE_RIGHT
+} MotorState;
+
+volatile MotorState currentMotorState = STATE_STOP;
 
 /* USER CODE END PV */
 
@@ -64,10 +78,18 @@ osThreadId defaultTaskHandle;
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_USART2_UART_Init(void);
-void StartDefaultTask(void const * argument);
+static void MX_USART3_UART_Init(void);
+
+void StartMotorTask(void const * argument);
+void StartCommandReceiverTask(void const * argument);
+void StartMotorControlTask(void const * argument);
 
 /* USER CODE BEGIN PFP */
-
+void go_forward(void);
+void go_backward(void);
+void turn_left(void);
+void turn_right(void);
+void stop(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -105,6 +127,7 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_USART2_UART_Init();
+  MX_USART3_UART_Init();
   /* USER CODE BEGIN 2 */
 
   /* USER CODE END 2 */
@@ -123,12 +146,20 @@ int main(void)
 
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
+  osMessageQDef(commandQueue, 8, uint8_t);
+  commandQueueHandle = osMessageCreate(osMessageQ(commandQueue), NULL);
   /* USER CODE END RTOS_QUEUES */
 
   /* Create the thread(s) */
   /* definition and creation of defaultTask */
-  osThreadDef(defaultTask, StartDefaultTask, osPriorityNormal, 0, 128);
-  defaultTaskHandle = osThreadCreate(osThread(defaultTask), NULL);
+  osThreadDef(MotorTask, StartMotorTask, osPriorityNormal, 0, 128);
+  MotorHandle = osThreadCreate(osThread(MotorTask), NULL);
+
+  osThreadDef(CommandReceiverTask, StartCommandReceiverTask, osPriorityRealtime, 0, 128);
+  CommandReceiverHandle = osThreadCreate(osThread(CommandReceiverTask), NULL);
+
+  osThreadDef(motorControlTask, StartMotorControlTask, osPriorityNormal, 0, 128);
+  motorControlTaskHandle = osThreadCreate(osThread(motorControlTask), NULL);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -222,6 +253,39 @@ static void MX_USART2_UART_Init(void)
 }
 
 /**
+  * @brief USART3 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_USART3_UART_Init(void)
+{
+
+  /* USER CODE BEGIN USART3_Init 0 */
+
+  /* USER CODE END USART3_Init 0 */
+
+  /* USER CODE BEGIN USART3_Init 1 */
+
+  /* USER CODE END USART3_Init 1 */
+  huart3.Instance = USART3;
+  huart3.Init.BaudRate = 115200;
+  huart3.Init.WordLength = UART_WORDLENGTH_8B;
+  huart3.Init.StopBits = UART_STOPBITS_1;
+  huart3.Init.Parity = UART_PARITY_NONE;
+  huart3.Init.Mode = UART_MODE_TX_RX;
+  huart3.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart3.Init.OverSampling = UART_OVERSAMPLING_16;
+  if (HAL_UART_Init(&huart3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN USART3_Init 2 */
+
+  /* USER CODE END USART3_Init 2 */
+
+}
+
+/**
   * @brief GPIO Initialization Function
   * @param None
   * @retval None
@@ -240,7 +304,7 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOA, MOTOR_R_F_Pin|MOROR_R_B_Pin|MOTOR_L_B_Pin|LED2_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOA, MOTOR_R_F_Pin|MOTOR_R_B_Pin|MOTOR_L_B_Pin|LED2_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(MOTOR_L_F_GPIO_Port, MOTOR_L_F_Pin, GPIO_PIN_RESET);
@@ -251,8 +315,8 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(B1_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : MOTOR_R_F_Pin MOROR_R_B_Pin MOTOR_L_B_Pin LED2_Pin */
-  GPIO_InitStruct.Pin = MOTOR_R_F_Pin|MOROR_R_B_Pin|MOTOR_L_B_Pin|LED2_Pin;
+  /*Configure GPIO pins : MOTOR_R_F_Pin MOTOR_R_B_Pin MOTOR_L_B_Pin LED2_Pin */
+  GPIO_InitStruct.Pin = MOTOR_R_F_Pin|MOTOR_R_B_Pin|MOTOR_L_B_Pin|LED2_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
@@ -274,68 +338,119 @@ static void MX_GPIO_Init(void)
   /* USER CODE END MX_GPIO_Init_2 */
 }
 
-void StartDefaultTask(void const * argument)
-{
-  /* Infinite loop */
-  for(;;)
-  {
-    // 2초간 전진
+/* USER CODE BEGIN 4 */
+// --- 모터 제어 헬퍼 함수들 ---
+void go_forward() {
     HAL_GPIO_WritePin(MOTOR_L_F_Port, MOTOR_L_F_Pin, GPIO_PIN_SET);
     HAL_GPIO_WritePin(MOTOR_L_B_Port, MOTOR_L_B_Pin, GPIO_PIN_RESET);
     HAL_GPIO_WritePin(MOTOR_R_F_Port, MOTOR_R_F_Pin, GPIO_PIN_SET);
     HAL_GPIO_WritePin(MOTOR_R_B_Port, MOTOR_R_B_Pin, GPIO_PIN_RESET);
-    osDelay(1500);
+}
 
-    // 1초간 정지
-    HAL_GPIO_WritePin(MOTOR_L_F_Port, MOTOR_L_F_Pin, GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(MOTOR_L_B_Port, MOTOR_L_B_Pin, GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(MOTOR_R_F_Port, MOTOR_R_F_Pin, GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(MOTOR_R_B_Port, MOTOR_R_B_Pin, GPIO_PIN_RESET);
-    osDelay(1000);
-
-    // 2초간 후진
+void go_backward() {
     HAL_GPIO_WritePin(MOTOR_L_F_Port, MOTOR_L_F_Pin, GPIO_PIN_RESET);
     HAL_GPIO_WritePin(MOTOR_L_B_Port, MOTOR_L_B_Pin, GPIO_PIN_SET);
     HAL_GPIO_WritePin(MOTOR_R_F_Port, MOTOR_R_F_Pin, GPIO_PIN_RESET);
     HAL_GPIO_WritePin(MOTOR_R_B_Port, MOTOR_R_B_Pin, GPIO_PIN_SET);
-    osDelay(1500);
-
-    // 1초간 정지
-    HAL_GPIO_WritePin(MOTOR_L_F_Port, MOTOR_L_F_Pin, GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(MOTOR_L_B_Port, MOTOR_L_B_Pin, GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(MOTOR_R_F_Port, MOTOR_R_F_Pin, GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(MOTOR_R_B_Port, MOTOR_R_B_Pin, GPIO_PIN_RESET);
-    osDelay(1000);
-
-    // 1.5초간 제자리 우회전 (왼쪽 전진, 오른쪽 후진)
-    HAL_GPIO_WritePin(MOTOR_L_F_Port, MOTOR_L_F_Pin, GPIO_PIN_SET);
-    HAL_GPIO_WritePin(MOTOR_L_B_Port, MOTOR_L_B_Pin, GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(MOTOR_R_F_Port, MOTOR_R_F_Pin, GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(MOTOR_R_B_Port, MOTOR_R_B_Pin, GPIO_PIN_SET);
-    osDelay(1500);
-
-    // 1초간 정지
-    HAL_GPIO_WritePin(MOTOR_L_F_Port, MOTOR_L_F_Pin, GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(MOTOR_L_B_Port, MOTOR_L_B_Pin, GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(MOTOR_R_F_Port, MOTOR_R_F_Pin, GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(MOTOR_R_B_Port, MOTOR_R_B_Pin, GPIO_PIN_RESET);
-    osDelay(1000);
-
-    // 1.5초간 제자리 좌회전 (왼쪽 후진, 오른쪽 전진)
-	HAL_GPIO_WritePin(MOTOR_L_F_Port, MOTOR_L_F_Pin, GPIO_PIN_RESET);
-	HAL_GPIO_WritePin(MOTOR_L_B_Port, MOTOR_L_B_Pin, GPIO_PIN_SET);
-	HAL_GPIO_WritePin(MOTOR_R_F_Port, MOTOR_R_F_Pin, GPIO_PIN_SET);
-	HAL_GPIO_WritePin(MOTOR_R_B_Port, MOTOR_R_B_Pin, GPIO_PIN_RESET);
-	osDelay(1500);
-
-	// 1초간 정지
-	HAL_GPIO_WritePin(MOTOR_L_F_Port, MOTOR_L_F_Pin, GPIO_PIN_RESET);
-	HAL_GPIO_WritePin(MOTOR_L_B_Port, MOTOR_L_B_Pin, GPIO_PIN_RESET);
-	HAL_GPIO_WritePin(MOTOR_R_F_Port, MOTOR_R_F_Pin, GPIO_PIN_RESET);
-	HAL_GPIO_WritePin(MOTOR_R_B_Port, MOTOR_R_B_Pin, GPIO_PIN_RESET);
-	osDelay(1000);
-  }
 }
+
+void turn_left() {
+    HAL_GPIO_WritePin(MOTOR_L_F_Port, MOTOR_L_F_Pin, GPIO_PIN_RESET); // 왼쪽 후진
+    HAL_GPIO_WritePin(MOTOR_L_B_Port, MOTOR_L_B_Pin, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(MOTOR_R_F_Port, MOTOR_R_F_Pin, GPIO_PIN_SET);   // 오른쪽 전진
+    HAL_GPIO_WritePin(MOTOR_R_B_Port, MOTOR_R_B_Pin, GPIO_PIN_RESET);
+}
+
+void turn_right() {
+    HAL_GPIO_WritePin(MOTOR_L_F_Port, MOTOR_L_F_Pin, GPIO_PIN_SET);   // 왼쪽 전진
+    HAL_GPIO_WritePin(MOTOR_L_B_Port, MOTOR_L_B_Pin, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(MOTOR_R_F_Port, MOTOR_R_F_Pin, GPIO_PIN_RESET); // 오른쪽 후진
+    HAL_GPIO_WritePin(MOTOR_R_B_Port, MOTOR_R_B_Pin, GPIO_PIN_SET);
+}
+
+void stop() {
+    HAL_GPIO_WritePin(MOTOR_L_F_Port, MOTOR_L_F_Pin, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(MOTOR_L_B_Port, MOTOR_L_B_Pin, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(MOTOR_R_F_Port, MOTOR_R_F_Pin, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(MOTOR_R_B_Port, MOTOR_R_B_Pin, GPIO_PIN_RESET);
+}
+
+void StartCommandReceiverTask(void const * argument)
+{
+    uint8_t received_char;
+
+    for (;;)
+    {
+        // UART로 1바이트 수신
+        if (HAL_UART_Receive(&huart3, &received_char, 1, HAL_MAX_DELAY) == HAL_OK)
+        {
+            // \n 또는 \r 문자는 무시
+            if (received_char != '\n' && received_char != '\r')
+            {
+                // 메시지 큐에 문자 한 개를 넣음
+                osMessagePut(commandQueueHandle, received_char, 0);
+            }
+        }
+    }
+}
+
+
+void StartMotorTask (void const * argument)
+{
+    osEvent evt;
+    uint8_t command;
+
+    for (;;)
+    {
+        // 큐에서 명령 수신 (무한 대기)
+        evt = osMessageGet(commandQueueHandle, osWaitForever);
+
+        if (evt.status == osEventMessage)
+        {
+            command = (uint8_t)evt.value.v;
+
+            // 수신한 문자에 따라 상태 변수만 갱신
+            switch (command)
+            {
+                case 'F': currentMotorState = STATE_FORWARD;  break;
+                case 'B': currentMotorState = STATE_BACKWARD; break;
+                case 'L': currentMotorState = STATE_LEFT;     break;
+                case 'R': currentMotorState = STATE_RIGHT;    break;
+                case 'S': currentMotorState = STATE_STOP;     break;
+                default:  /* 무시 */                          break;
+            }
+        }
+    }
+}
+
+void StartMotorControlTask(void const * argument)
+{
+    MotorState lastState = -1;  // 마지막으로 처리한 상태
+
+    for (;;)
+    {
+        // 상태가 변경된 경우만 동작
+        if (lastState != currentMotorState)
+        {
+            lastState = currentMotorState;
+
+            switch (currentMotorState)
+            {
+                case STATE_FORWARD:  go_forward();  break;
+                case STATE_BACKWARD: go_backward(); break;
+                case STATE_LEFT:     turn_left();   break;
+                case STATE_RIGHT:    turn_right();  break;
+                case STATE_STOP:     stop();        break;
+                default:             stop();        break;
+            }
+        }
+
+        osDelay(20);  // 주기적으로 상태 확인
+    }
+}
+
+/* USER CODE END 4 */
+
 
 /**
   * @brief  This function is executed in case of error occurrence.
@@ -348,6 +463,7 @@ void Error_Handler(void)
   __disable_irq();
   while (1)
   {
+
   }
   /* USER CODE END Error_Handler_Debug */
 }
