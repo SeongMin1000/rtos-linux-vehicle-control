@@ -28,6 +28,14 @@
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
 
+typedef enum {
+  STATE_STOP,
+  STATE_FORWARD,
+  STATE_BACKWARD,
+  STATE_LEFT,
+  STATE_RIGHT
+} MotorState;
+
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -56,19 +64,16 @@
 UART_HandleTypeDef huart2;
 UART_HandleTypeDef huart3;
 
-/* USER CODE BEGIN PV */
-osThreadId CommandReceiverHandle;
-osThreadId MotorHandle;
-osThreadId motorControlTaskHandle;
-osMessageQId commandQueueHandle;
+//osThreadId defaultTaskHandle;
 
-typedef enum {
-  STATE_STOP,
-  STATE_FORWARD,
-  STATE_BACKWARD,
-  STATE_LEFT,
-  STATE_RIGHT
-} MotorState;
+TaskHandle_t rxTaskHandle;
+TaskHandle_t cmdTaskHandle;
+TaskHandle_t ctrlTaskHandle;
+
+QueueHandle_t cmdQueueHandle;
+
+
+/* USER CODE BEGIN PV */
 
 volatile MotorState currentMotorState = STATE_STOP;
 
@@ -80,9 +85,9 @@ static void MX_GPIO_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_USART3_UART_Init(void);
 
-void StartMotorTask(void const * argument);
-void StartCommandReceiverTask(void const * argument);
-void StartMotorControlTask(void const * argument);
+void RxTask(void * argument);
+void CmdTask(void * argument);
+void CtrlTask(void * argument);
 
 /* USER CODE BEGIN PFP */
 void go_forward(void);
@@ -146,27 +151,21 @@ int main(void)
 
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
-  osMessageQDef(commandQueue, 8, uint8_t);
-  commandQueueHandle = osMessageCreate(osMessageQ(commandQueue), NULL);
+  cmdQueueHandle = xQueueCreate(8, sizeof(uint8_t));
   /* USER CODE END RTOS_QUEUES */
 
   /* Create the thread(s) */
   /* definition and creation of defaultTask */
-  osThreadDef(MotorTask, StartMotorTask, osPriorityNormal, 0, 128);
-  MotorHandle = osThreadCreate(osThread(MotorTask), NULL);
-
-  osThreadDef(CommandReceiverTask, StartCommandReceiverTask, osPriorityRealtime, 0, 128);
-  CommandReceiverHandle = osThreadCreate(osThread(CommandReceiverTask), NULL);
-
-  osThreadDef(motorControlTask, StartMotorControlTask, osPriorityNormal, 0, 128);
-  motorControlTaskHandle = osThreadCreate(osThread(motorControlTask), NULL);
+  xTaskCreate(RxTask,   "rx",   128, NULL, tskIDLE_PRIORITY + 2, &rxTaskHandle);
+  xTaskCreate(CmdTask,  "cmd",  128, NULL, tskIDLE_PRIORITY + 2, &cmdTaskHandle);
+  xTaskCreate(CtrlTask, "ctrl", 128, NULL, tskIDLE_PRIORITY + 2, &ctrlTaskHandle);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
   /* USER CODE END RTOS_THREADS */
 
   /* Start scheduler */
-  osKernelStart();
+  vTaskStartScheduler();
 
   /* We should never get here as control is now taken by the scheduler */
 
@@ -339,7 +338,7 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
-// --- 모터 제어 헬퍼 함수들 ---
+// --- 모터 제어 함수들 ---
 void go_forward() {
     HAL_GPIO_WritePin(MOTOR_L_F_Port, MOTOR_L_F_Pin, GPIO_PIN_SET);
     HAL_GPIO_WritePin(MOTOR_L_B_Port, MOTOR_L_B_Pin, GPIO_PIN_RESET);
@@ -374,42 +373,34 @@ void stop() {
     HAL_GPIO_WritePin(MOTOR_R_F_Port, MOTOR_R_F_Pin, GPIO_PIN_RESET);
     HAL_GPIO_WritePin(MOTOR_R_B_Port, MOTOR_R_B_Pin, GPIO_PIN_RESET);
 }
+// ------------
 
-void StartCommandReceiverTask(void const * argument)
+void RxTask(void * argument)
 {
     uint8_t received_char;
 
     for (;;)
     {
-        // UART로 1바이트 수신
         if (HAL_UART_Receive(&huart3, &received_char, 1, HAL_MAX_DELAY) == HAL_OK)
         {
-            // \n 또는 \r 문자는 무시
             if (received_char != '\n' && received_char != '\r')
             {
-                // 메시지 큐에 문자 한 개를 넣음
-                osMessagePut(commandQueueHandle, received_char, 0);
+                // 메시지 큐에 0 tick 기다리지 않고 보냄 (즉시 실패 시 버림)
+                xQueueSend(cmdQueueHandle, &received_char, 0);
             }
         }
     }
 }
 
-
-void StartMotorTask (void const * argument)
+void CmdTask(void * argument)
 {
-    osEvent evt;
     uint8_t command;
 
     for (;;)
     {
-        // 큐에서 명령 수신 (무한 대기)
-        evt = osMessageGet(commandQueueHandle, osWaitForever);
-
-        if (evt.status == osEventMessage)
+        // 큐에서 명령어 받기 (무한 대기)
+        if (xQueueReceive(cmdQueueHandle, &command, portMAX_DELAY) == pdPASS)
         {
-            command = (uint8_t)evt.value.v;
-
-            // 수신한 문자에 따라 상태 변수만 갱신
             switch (command)
             {
                 case 'F': currentMotorState = STATE_FORWARD;  break;
@@ -417,19 +408,18 @@ void StartMotorTask (void const * argument)
                 case 'L': currentMotorState = STATE_LEFT;     break;
                 case 'R': currentMotorState = STATE_RIGHT;    break;
                 case 'S': currentMotorState = STATE_STOP;     break;
-                default:  /* 무시 */                          break;
+                default :  /* 무시 */                          break;
             }
         }
     }
 }
 
-void StartMotorControlTask(void const * argument)
+void CtrlTask(void * argument)
 {
     MotorState lastState = -1;  // 마지막으로 처리한 상태
 
     for (;;)
     {
-        // 상태가 변경된 경우만 동작
         if (lastState != currentMotorState)
         {
             lastState = currentMotorState;
@@ -445,9 +435,10 @@ void StartMotorControlTask(void const * argument)
             }
         }
 
-        osDelay(20);  // 주기적으로 상태 확인
+        vTaskDelay(pdMS_TO_TICKS(20));  // 20ms 지연
     }
 }
+
 
 /* USER CODE END 4 */
 
@@ -468,7 +459,7 @@ void Error_Handler(void)
   /* USER CODE END Error_Handler_Debug */
 }
 
-#ifdef  USE_FULL_ASSERT
+#ifdef USE_FULL_ASSERT
 /**
   * @brief  Reports the name of the source file and the source line number
   *         where the assert_param error has occurred.
