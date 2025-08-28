@@ -49,6 +49,8 @@ extern "C" {
 
 /* USER CODE END EM */
 
+void HAL_TIM_MspPostInit(TIM_HandleTypeDef *htim);
+
 /* Exported functions prototypes ---------------------------------------------*/
 void Error_Handler(void);
 
@@ -57,9 +59,6 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
-#define B1_Pin GPIO_PIN_13
-#define B1_GPIO_Port GPIOC
-#define B1_EXTI_IRQn EXTI15_10_IRQn
 #define MOTOR_R_F_Pin GPIO_PIN_0
 #define MOTOR_R_F_GPIO_Port GPIOA
 #define MOTOR_R_B_Pin GPIO_PIN_1
@@ -68,18 +67,14 @@ void Error_Handler(void);
 #define USART_TX_GPIO_Port GPIOA
 #define USART_RX_Pin GPIO_PIN_3
 #define USART_RX_GPIO_Port GPIOA
-#define MOTOR_L_B_Pin GPIO_PIN_4
-#define MOTOR_L_B_GPIO_Port GPIOA
-#define LED2_Pin GPIO_PIN_5
-#define LED2_GPIO_Port GPIOA
-#define MOTOR_L_F_Pin GPIO_PIN_0
+#define MOTOR_L_B_Pin GPIO_PIN_10
+#define MOTOR_L_B_GPIO_Port GPIOB
+#define MOTOR_L_F_Pin GPIO_PIN_11
 #define MOTOR_L_F_GPIO_Port GPIOB
 #define TMS_Pin GPIO_PIN_13
 #define TMS_GPIO_Port GPIOA
 #define TCK_Pin GPIO_PIN_14
 #define TCK_GPIO_Port GPIOA
-#define SWO_Pin GPIO_PIN_3
-#define SWO_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
 
